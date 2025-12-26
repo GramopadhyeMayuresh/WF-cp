@@ -1,0 +1,78 @@
+name: Cherry Pick and PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: 'Target branch to cherry-pick into'
+        required: true
+        type: string
+      commit_ids:
+        description: 'Space-separated list of commit SHAs to cherry-pick'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  cherry-pick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for all branches and tags
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create Temp Branch
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+        run: |
+          # Create a unique branch name
+          TEMP_BRANCH="cherry-pick-${TARGET_BRANCH}-$(date +%s)"
+          echo "TEMP_BRANCH=$TEMP_BRANCH" >> $GITHUB_ENV
+          
+          # Checkout target branch first to ensure it exists locally
+          git checkout $TARGET_BRANCH
+          git pull origin $TARGET_BRANCH
+          
+          # Create and checkout temp branch
+          git checkout -b $TEMP_BRANCH
+
+      - name: Cherry Pick Commits
+        env:
+          COMMIT_IDS: ${{ inputs.commit_ids }}
+        run: |
+          # Convert space-separated string to array
+          IFS=' ' read -r -a COMMITS <<< "$COMMIT_IDS"
+          
+          # Cherry pick each commit
+          for COMMIT in "${COMMITS[@]}"; do
+            echo "Cherry-picking $COMMIT..."
+            git cherry-pick $COMMIT || {
+              echo "Error: Cherry-pick failed for commit $COMMIT. Conflict or invalid commit."
+              git cherry-pick --abort
+              exit 1
+            }
+          done
+
+      - name: Push Temp Branch
+        run: |
+          git push origin $TEMP_BRANCH
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+        run: |
+          gh pr create \
+            --base $TARGET_BRANCH \
+            --head $TEMP_BRANCH \
+            --title "Cherry-pick commits to $TARGET_BRANCH" \
+            --body "Automated cherry-pick of commits: ${{ inputs.commit_ids }}"
